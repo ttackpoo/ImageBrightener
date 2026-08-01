@@ -11,24 +11,24 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Install Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.12'
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
 
-    - name: Install packages
-      run: |
-        python -m pip install --upgrade pip
-        pip install -r requirements.txt
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-    - name: Build EXE
-      run: |
-        pyinstaller --onefile --noconsole brighten_gui.py
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --noconsole brighten_gui.py
 
-    - name: Upload EXE
-      uses: actions/upload-artifact@v4
-      with:
-        name: brighten_gui
-        path: dist/brighten_gui.exe
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: brighten_gui
+          path: dist/brighten_gui.exe
