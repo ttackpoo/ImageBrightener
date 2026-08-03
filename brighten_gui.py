@@ -1,5 +1,6 @@
 from pathlib import Path
-from PIL import Image, ImageEnhance
+from PIL import Image
+import numpy as np
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import threading
@@ -12,20 +13,36 @@ def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in EXTS
 
 
-def brighten_image(src_path: Path, dst_path: Path, factor: float):
+def brighten_image(src_path: Path, dst_path: Path, brightness_percent: float):
+    """
+    Excel/PowerPoint 스타일 밝기:
+    새값 = 원래값 + (255 - 원래값) * (brightness_percent / 100)
+    예: 95면 거의 흰색에 가까워짐
+    """
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Image.open(src_path) as img:
-        # 투명도 보존
-        if img.mode in ("RGBA", "LA"):
+        has_alpha = img.mode in ("RGBA", "LA")
+
+        if has_alpha:
             alpha = img.getchannel("A")
-            rgb = img.convert("RGB")
-            enhanced = ImageEnhance.Brightness(rgb).enhance(factor).convert("RGBA")
-            enhanced.putalpha(alpha)
-            enhanced.save(dst_path)
+            img = img.convert("RGB")
         else:
-            enhanced = ImageEnhance.Brightness(img).enhance(factor)
-            enhanced.save(dst_path)
+            img = img.convert("RGB")
+
+        arr = np.array(img).astype(np.float32)
+
+        # Office(Excel/PowerPoint) 방식
+        arr = arr + (255.0 - arr) * (brightness_percent / 100.0)
+
+        arr = np.clip(arr, 0, 255).astype(np.uint8)
+        result = Image.fromarray(arr, mode="RGB")
+
+        if has_alpha:
+            result = result.convert("RGBA")
+            result.putalpha(alpha)
+
+        result.save(dst_path)
 
 
 class BrightenApp:
@@ -37,7 +54,7 @@ class BrightenApp:
 
         self.input_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
-        self.brightness = tk.DoubleVar(value=1.95)
+        self.brightness = tk.DoubleVar(value=95)   # 기본값 95%
         self.recursive = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="준비됨")
 
@@ -57,21 +74,21 @@ class BrightenApp:
         ttk.Entry(frm, textvariable=self.output_folder, width=58).grid(row=1, column=1, sticky="we", **pad)
         ttk.Button(frm, text="찾기", command=self.choose_output).grid(row=1, column=2, **pad)
 
-        ttk.Label(frm, text="밝기 배수").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="밝기(%)").grid(row=2, column=0, sticky="w", **pad)
         brightness_frame = ttk.Frame(frm)
         brightness_frame.grid(row=2, column=1, sticky="we", **pad)
 
         self.scale = ttk.Scale(
             brightness_frame,
-            from_=0.2,
-            to=3.0,
+            from_=0,
+            to=100,
             orient="horizontal",
             variable=self.brightness,
             command=self.update_brightness_label,
         )
         self.scale.pack(side="left", fill="x", expand=True)
 
-        self.brightness_label = ttk.Label(brightness_frame, text="1.95x", width=8)
+        self.brightness_label = ttk.Label(brightness_frame, text="95%", width=8)
         self.brightness_label.pack(side="left", padx=10)
 
         ttk.Checkbutton(
@@ -103,7 +120,7 @@ class BrightenApp:
             self.output_folder.set(folder)
 
     def update_brightness_label(self, _=None):
-        self.brightness_label.config(text=f"{self.brightness.get():.2f}x")
+        self.brightness_label.config(text=f"{self.brightness.get():.0f}%")
 
     def write_log(self, text):
         self.log.configure(state="normal")
@@ -117,7 +134,7 @@ class BrightenApp:
     def start_processing(self):
         input_dir = Path(self.input_folder.get().strip())
         output_dir = Path(self.output_folder.get().strip())
-        factor = float(self.brightness.get())
+        brightness_percent = float(self.brightness.get())
         recursive = bool(self.recursive.get())
 
         if not input_dir.exists() or not input_dir.is_dir():
@@ -136,18 +153,18 @@ class BrightenApp:
         self.status.set("처리 중...")
         self.write_log(f"입력 폴더: {input_dir}")
         self.write_log(f"출력 폴더: {output_dir}")
-        self.write_log(f"밝기 배수: {factor:.2f}x")
+        self.write_log(f"밝기: {brightness_percent:.0f}%")
         self.write_log(f"하위 폴더 처리: {'예' if recursive else '아니오'}")
         self.write_log("")
 
         thread = threading.Thread(
             target=self.process_images,
-            args=(input_dir, output_dir, factor, recursive),
+            args=(input_dir, output_dir, brightness_percent, recursive),
             daemon=True
         )
         thread.start()
 
-    def process_images(self, input_dir, output_dir, factor, recursive):
+    def process_images(self, input_dir, output_dir, brightness_percent, recursive):
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -171,7 +188,7 @@ class BrightenApp:
                     else:
                         dst = output_dir / src.name
 
-                    brighten_image(src, dst, factor)
+                    brighten_image(src, dst, brightness_percent)
                     self.root.after(0, self.write_log, f"[{i}/{total}] 완료: {src.name}")
                 except Exception as e:
                     self.root.after(0, self.write_log, f"[{i}/{total}] 실패: {src.name} -> {e}")
