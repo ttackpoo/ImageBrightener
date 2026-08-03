@@ -1,9 +1,11 @@
 from pathlib import Path
-from PIL import Image
-import numpy as np
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import threading
+
+import cv2
+import numpy as np
+from PIL import Image
 
 # 지원 확장자
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
@@ -13,44 +15,58 @@ def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in EXTS
 
 
-def apply_office_style_adjustment(img: Image.Image, brightness_percent: float, contrast_percent: float):
+def enhance_image_office_style(img: Image.Image, brightness_percent: float, clahe_clip: float) -> Image.Image:
     """
-    엑셀/파워포인트 느낌의 밝기 + 약한 대비 보정
-    - brightness_percent: 0~100
-      0이면 변화 없음, 100이면 흰색에 매우 가까워짐
-    - contrast_percent: 100 기준
-      100이면 변화 없음, 110이면 대비 약간 증가, 90이면 대비 약간 감소
+    1) 엑셀/오피스 느낌의 밝기 보정
+       새값 = 원래값 + (255 - 원래값) * (brightness_percent / 100)
+
+    2) LAB의 L 채널에 CLAHE 적용
+       작은 명암 차이를 더 잘 보이게 함
     """
-    img = img.convert("RGB")
-    arr = np.array(img).astype(np.float32)
+    has_alpha = "A" in img.getbands() or (img.mode == "P" and "transparency" in img.info)
 
-    # 1) 밝기: 흰색(255) 쪽으로 섞는 방식
-    arr = arr + (255.0 - arr) * (brightness_percent / 100.0)
+    if has_alpha:
+        rgba = img.convert("RGBA")
+        alpha = rgba.getchannel("A")
+        rgb_img = rgba.convert("RGB")
+    else:
+        alpha = None
+        rgb_img = img.convert("RGB")
 
-    # 2) 대비: 128 기준으로 늘리거나 줄임
-    contrast_factor = contrast_percent / 100.0
-    arr = (arr - 128.0) * contrast_factor + 128.0
+    rgb = np.array(rgb_img, dtype=np.uint8)
+    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    lab = cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB)
 
-    arr = np.clip(arr, 0, 255).astype(np.uint8)
-    return Image.fromarray(arr, mode="RGB")
+    l, a, b = cv2.split(lab)
+
+    # 1) 밝기 먼저 올리기
+    l = l.astype(np.float32)
+    l = l + (255.0 - l) * (brightness_percent / 100.0)
+    l = np.clip(l, 0, 255).astype(np.uint8)
+
+    # 2) 국부 대비 강화
+    clahe_clip = max(1.0, float(clahe_clip))
+    clahe = cv2.createCLAHE(clipLimit=clahe_clip, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+
+    lab2 = cv2.merge((l, a, b))
+    bgr2 = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+    rgb2 = cv2.cvtColor(bgr2, cv2.COLOR_BGR2RGB)
+
+    result = Image.fromarray(rgb2, mode="RGB")
+
+    if has_alpha:
+        result = result.convert("RGBA")
+        result.putalpha(alpha)
+
+    return result
 
 
-def brighten_image(src_path: Path, dst_path: Path, brightness_percent: float, contrast_percent: float):
+def brighten_image(src_path: Path, dst_path: Path, brightness_percent: float, clahe_clip: float):
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Image.open(src_path) as img:
-        has_alpha = img.mode in ("RGBA", "LA")
-        alpha = None
-
-        if has_alpha:
-            alpha = img.getchannel("A")
-
-        result = apply_office_style_adjustment(img, brightness_percent, contrast_percent)
-
-        if has_alpha:
-            result = result.convert("RGBA")
-            result.putalpha(alpha)
-
+        result = enhance_image_office_style(img, brightness_percent, clahe_clip)
         result.save(dst_path)
 
 
@@ -58,13 +74,13 @@ class BrightenApp:
     def __init__(self, root):
         self.root = root
         self.root.title("이미지 밝기 조절")
-        self.root.geometry("680x470")
+        self.root.geometry("700x470")
         self.root.resizable(False, False)
 
         self.input_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
         self.brightness = tk.DoubleVar(value=95)   # 엑셀식 밝기 %
-        self.contrast = tk.DoubleVar(value=110)    # 약간 대비 증가
+        self.clahe_clip = tk.DoubleVar(value=2.5)  # 국부 대비 강화
         self.recursive = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value="준비됨")
 
@@ -77,11 +93,11 @@ class BrightenApp:
         frm.pack(fill="both", expand=True, padx=14, pady=14)
 
         ttk.Label(frm, text="입력 폴더").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.input_folder, width=60).grid(row=0, column=1, sticky="we", **pad)
+        ttk.Entry(frm, textvariable=self.input_folder, width=62).grid(row=0, column=1, sticky="we", **pad)
         ttk.Button(frm, text="찾기", command=self.choose_input).grid(row=0, column=2, **pad)
 
         ttk.Label(frm, text="출력 폴더").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.output_folder, width=60).grid(row=1, column=1, sticky="we", **pad)
+        ttk.Entry(frm, textvariable=self.output_folder, width=62).grid(row=1, column=1, sticky="we", **pad)
         ttk.Button(frm, text="찾기", command=self.choose_output).grid(row=1, column=2, **pad)
 
         ttk.Label(frm, text="밝기(%)").grid(row=2, column=0, sticky="w", **pad)
@@ -101,22 +117,22 @@ class BrightenApp:
         self.brightness_label = ttk.Label(brightness_frame, text="95%", width=8)
         self.brightness_label.pack(side="left", padx=10)
 
-        ttk.Label(frm, text="대비(%)").grid(row=3, column=0, sticky="w", **pad)
-        contrast_frame = ttk.Frame(frm)
-        contrast_frame.grid(row=3, column=1, sticky="we", **pad)
+        ttk.Label(frm, text="국부 대비(CLAHE)").grid(row=3, column=0, sticky="w", **pad)
+        clahe_frame = ttk.Frame(frm)
+        clahe_frame.grid(row=3, column=1, sticky="we", **pad)
 
-        self.contrast_scale = ttk.Scale(
-            contrast_frame,
-            from_=50,
-            to=150,
+        self.clahe_scale = ttk.Scale(
+            clahe_frame,
+            from_=1.0,
+            to=5.0,
             orient="horizontal",
-            variable=self.contrast,
+            variable=self.clahe_clip,
             command=self.update_labels,
         )
-        self.contrast_scale.pack(side="left", fill="x", expand=True)
+        self.clahe_scale.pack(side="left", fill="x", expand=True)
 
-        self.contrast_label = ttk.Label(contrast_frame, text="110%", width=8)
-        self.contrast_label.pack(side="left", padx=10)
+        self.clahe_label = ttk.Label(clahe_frame, text="2.5", width=8)
+        self.clahe_label.pack(side="left", padx=10)
 
         ttk.Checkbutton(
             frm,
@@ -128,7 +144,7 @@ class BrightenApp:
         self.start_btn.grid(row=5, column=1, sticky="e", **pad)
 
         ttk.Label(frm, text="진행 상태").grid(row=6, column=0, sticky="nw", **pad)
-        self.log = tk.Text(frm, height=11, width=74, state="disabled")
+        self.log = tk.Text(frm, height=11, width=78, state="disabled")
         self.log.grid(row=6, column=1, columnspan=2, sticky="nsew", **pad)
 
         status_bar = ttk.Label(frm, textvariable=self.status, relief="sunken", anchor="w")
@@ -150,7 +166,7 @@ class BrightenApp:
 
     def update_labels(self, _=None):
         self.brightness_label.config(text=f"{self.brightness.get():.0f}%")
-        self.contrast_label.config(text=f"{self.contrast.get():.0f}%")
+        self.clahe_label.config(text=f"{self.clahe_clip.get():.1f}")
 
     def write_log(self, text):
         self.log.configure(state="normal")
@@ -165,7 +181,7 @@ class BrightenApp:
         input_dir = Path(self.input_folder.get().strip())
         output_dir = Path(self.output_folder.get().strip())
         brightness_percent = float(self.brightness.get())
-        contrast_percent = float(self.contrast.get())
+        clahe_clip = float(self.clahe_clip.get())
         recursive = bool(self.recursive.get())
 
         if not input_dir.exists() or not input_dir.is_dir():
@@ -185,18 +201,18 @@ class BrightenApp:
         self.write_log(f"입력 폴더: {input_dir}")
         self.write_log(f"출력 폴더: {output_dir}")
         self.write_log(f"밝기: {brightness_percent:.0f}%")
-        self.write_log(f"대비: {contrast_percent:.0f}%")
+        self.write_log(f"국부 대비(CLAHE): {clahe_clip:.1f}")
         self.write_log(f"하위 폴더 처리: {'예' if recursive else '아니오'}")
         self.write_log("")
 
         thread = threading.Thread(
             target=self.process_images,
-            args=(input_dir, output_dir, brightness_percent, contrast_percent, recursive),
+            args=(input_dir, output_dir, brightness_percent, clahe_clip, recursive),
             daemon=True
         )
         thread.start()
 
-    def process_images(self, input_dir, output_dir, brightness_percent, contrast_percent, recursive):
+    def process_images(self, input_dir, output_dir, brightness_percent, clahe_clip, recursive):
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +236,7 @@ class BrightenApp:
                     else:
                         dst = output_dir / src.name
 
-                    brighten_image(src, dst, brightness_percent, contrast_percent)
+                    brighten_image(src, dst, brightness_percent, clahe_clip)
                     self.root.after(0, self.write_log, f"[{i}/{total}] 완료: {src.name}")
                 except Exception as e:
                     self.root.after(0, self.write_log, f"[{i}/{total}] 실패: {src.name} -> {e}")
