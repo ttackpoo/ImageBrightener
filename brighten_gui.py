@@ -18,21 +18,19 @@ def is_image_file(path: Path) -> bool:
 def apply_exposure_gamma_clahe(
     img: Image.Image,
     exposure_ev: float,
-    gamma_value: float,
     clahe_clip: float,
 ) -> Image.Image:
     """
     1) Exposure: 밝기 전체를 선형 증폭
        -1 EV = 0.5배, +1 EV = 2배
 
-    2) Gamma: 중간톤 조정
-       gamma < 1.0 -> 밝아짐
-       gamma > 1.0 -> 어두워짐
+    2) Gamma: 0.5 고정
+       중간톤을 더 밝게 올림
 
     3) CLAHE: 국부 대비 강화
        작은 명암 차이를 더 잘 보이게 함
     """
-    has_alpha = "A" in img.getbands() or (img.mode == "P" and "transparency" in img.info)
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
 
     if has_alpha:
         rgba = img.convert("RGBA")
@@ -55,10 +53,8 @@ def apply_exposure_gamma_clahe(
     l = l * exposure_factor
     l = np.clip(l, 0, 255)
 
-    # 2) Gamma
-    # normalized 0..1 -> gamma correction
-    # gamma < 1 => brighter, gamma > 1 => darker
-    gamma_value = max(0.05, float(gamma_value))
+    # 2) Gamma (고정 0.5)
+    gamma_value = 0.5
     l_norm = l / 255.0
     l_norm = np.power(l_norm, gamma_value)
     l = np.clip(l_norm * 255.0, 0, 255).astype(np.uint8)
@@ -85,29 +81,32 @@ def process_single_image(
     src_path: Path,
     dst_path: Path,
     exposure_ev: float,
-    gamma_value: float,
     clahe_clip: float,
 ):
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     with Image.open(src_path) as img:
-        result = apply_exposure_gamma_clahe(img, exposure_ev, gamma_value, clahe_clip)
+        result = apply_exposure_gamma_clahe(img, exposure_ev, clahe_clip)
+
+        # JPEG/BMP 등 알파를 못 받는 포맷은 RGB로 저장
+        if result.mode == "RGBA" and dst_path.suffix.lower() in {".jpg", ".jpeg", ".bmp"}:
+            result = result.convert("RGB")
+
         result.save(dst_path)
 
 
 class BrightenApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("이미지 노출/감마/CLAHE 조절")
-        self.root.geometry("740x520")
+        self.root.title("이미지 노출/CLAHE 조절")
+        self.root.geometry("760x500")
         self.root.resizable(False, False)
 
         self.input_folder = tk.StringVar()
         self.output_folder = tk.StringVar()
 
-        # 기본값: HTE/어두운 이미지 기준
-        self.exposure_ev = tk.DoubleVar(value=0.8)   # +0.8EV
-        self.gamma_value = tk.DoubleVar(value=0.9)    # 조금 밝게
+        # 기본값
+        self.exposure_ev = tk.DoubleVar(value=0.8)   # +0.8 EV
         self.clahe_clip = tk.DoubleVar(value=2.5)     # 국부 대비 강화
 
         self.recursive = tk.BooleanVar(value=True)
@@ -122,14 +121,13 @@ class BrightenApp:
         frm.pack(fill="both", expand=True, padx=14, pady=14)
 
         ttk.Label(frm, text="입력 폴더").grid(row=0, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.input_folder, width=62).grid(row=0, column=1, sticky="we", **pad)
+        ttk.Entry(frm, textvariable=self.input_folder, width=64).grid(row=0, column=1, sticky="we", **pad)
         ttk.Button(frm, text="찾기", command=self.choose_input).grid(row=0, column=2, **pad)
 
         ttk.Label(frm, text="출력 폴더").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(frm, textvariable=self.output_folder, width=62).grid(row=1, column=1, sticky="we", **pad)
+        ttk.Entry(frm, textvariable=self.output_folder, width=64).grid(row=1, column=1, sticky="we", **pad)
         ttk.Button(frm, text="찾기", command=self.choose_output).grid(row=1, column=2, **pad)
 
-        # Exposure
         ttk.Label(frm, text="노출(EV)").grid(row=2, column=0, sticky="w", **pad)
         exposure_frame = ttk.Frame(frm)
         exposure_frame.grid(row=2, column=1, sticky="we", **pad)
@@ -137,38 +135,19 @@ class BrightenApp:
         self.exposure_scale = ttk.Scale(
             exposure_frame,
             from_=-2.0,
-            to=3.0,
+            to=8.0,
             orient="horizontal",
             variable=self.exposure_ev,
             command=self.update_labels,
         )
         self.exposure_scale.pack(side="left", fill="x", expand=True)
 
-        self.exposure_label = ttk.Label(exposure_frame, text="+0.8 EV", width=10)
+        self.exposure_label = ttk.Label(exposure_frame, text="+0.8 EV", width=12)
         self.exposure_label.pack(side="left", padx=10)
 
-        # Gamma
-        ttk.Label(frm, text="감마").grid(row=3, column=0, sticky="w", **pad)
-        gamma_frame = ttk.Frame(frm)
-        gamma_frame.grid(row=3, column=1, sticky="we", **pad)
-
-        self.gamma_scale = ttk.Scale(
-            gamma_frame,
-            from_=0.5,
-            to=1.8,
-            orient="horizontal",
-            variable=self.gamma_value,
-            command=self.update_labels,
-        )
-        self.gamma_scale.pack(side="left", fill="x", expand=True)
-
-        self.gamma_label = ttk.Label(gamma_frame, text="0.90", width=10)
-        self.gamma_label.pack(side="left", padx=10)
-
-        # CLAHE
-        ttk.Label(frm, text="CLAHE").grid(row=4, column=0, sticky="w", **pad)
+        ttk.Label(frm, text="CLAHE").grid(row=3, column=0, sticky="w", **pad)
         clahe_frame = ttk.Frame(frm)
-        clahe_frame.grid(row=4, column=1, sticky="we", **pad)
+        clahe_frame.grid(row=3, column=1, sticky="we", **pad)
 
         self.clahe_scale = ttk.Scale(
             clahe_frame,
@@ -180,27 +159,26 @@ class BrightenApp:
         )
         self.clahe_scale.pack(side="left", fill="x", expand=True)
 
-        self.clahe_label = ttk.Label(clahe_frame, text="2.5", width=10)
+        self.clahe_label = ttk.Label(clahe_frame, text="2.5", width=12)
         self.clahe_label.pack(side="left", padx=10)
 
         ttk.Checkbutton(
             frm,
             text="하위 폴더까지 처리",
             variable=self.recursive
-        ).grid(row=5, column=1, sticky="w", **pad)
+        ).grid(row=4, column=1, sticky="w", **pad)
 
         self.start_btn = ttk.Button(frm, text="시작", command=self.start_processing)
-        self.start_btn.grid(row=6, column=1, sticky="e", **pad)
+        self.start_btn.grid(row=5, column=1, sticky="e", **pad)
 
-        ttk.Label(frm, text="진행 상태").grid(row=7, column=0, sticky="nw", **pad)
-        self.log = tk.Text(frm, height=12, width=82, state="disabled")
-        self.log.grid(row=7, column=1, columnspan=2, sticky="nsew", **pad)
+        ttk.Label(frm, text="진행 상태").grid(row=6, column=0, sticky="nw", **pad)
+        self.log = tk.Text(frm, height=12, width=84, state="disabled")
+        self.log.grid(row=6, column=1, columnspan=2, sticky="nsew", **pad)
 
         status_bar = ttk.Label(frm, textvariable=self.status, relief="sunken", anchor="w")
-        status_bar.grid(row=8, column=0, columnspan=3, sticky="we", padx=10, pady=(12, 0))
+        status_bar.grid(row=7, column=0, columnspan=3, sticky="we", padx=10, pady=(12, 0))
 
         frm.columnconfigure(1, weight=1)
-
         self.update_labels()
 
     def choose_input(self):
@@ -219,7 +197,6 @@ class BrightenApp:
             self.exposure_label.config(text=f"+{ev:.1f} EV")
         else:
             self.exposure_label.config(text=f"{ev:.1f} EV")
-        self.gamma_label.config(text=f"{self.gamma_value.get():.2f}")
         self.clahe_label.config(text=f"{self.clahe_clip.get():.1f}")
 
     def write_log(self, text):
@@ -236,7 +213,6 @@ class BrightenApp:
         output_dir = Path(self.output_folder.get().strip())
 
         exposure_ev = float(self.exposure_ev.get())
-        gamma_value = float(self.gamma_value.get())
         clahe_clip = float(self.clahe_clip.get())
         recursive = bool(self.recursive.get())
 
@@ -254,23 +230,22 @@ class BrightenApp:
 
         self.set_busy(True)
         self.status.set("처리 중...")
-
         self.write_log(f"입력 폴더: {input_dir}")
         self.write_log(f"출력 폴더: {output_dir}")
         self.write_log(f"노출: {exposure_ev:+.1f} EV")
-        self.write_log(f"감마: {gamma_value:.2f}")
+        self.write_log("감마: 0.50 (고정)")
         self.write_log(f"CLAHE: {clahe_clip:.1f}")
         self.write_log(f"하위 폴더 처리: {'예' if recursive else '아니오'}")
         self.write_log("")
 
         thread = threading.Thread(
             target=self.process_images,
-            args=(input_dir, output_dir, exposure_ev, gamma_value, clahe_clip, recursive),
+            args=(input_dir, output_dir, exposure_ev, clahe_clip, recursive),
             daemon=True
         )
         thread.start()
 
-    def process_images(self, input_dir, output_dir, exposure_ev, gamma_value, clahe_clip, recursive):
+    def process_images(self, input_dir, output_dir, exposure_ev, clahe_clip, recursive):
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -294,7 +269,7 @@ class BrightenApp:
                     else:
                         dst = output_dir / src.name
 
-                    process_single_image(src, dst, exposure_ev, gamma_value, clahe_clip)
+                    process_single_image(src, dst, exposure_ev, clahe_clip)
                     self.root.after(0, self.write_log, f"[{i}/{total}] 완료: {src.name}")
                 except Exception as e:
                     self.root.after(0, self.write_log, f"[{i}/{total}] 실패: {src.name} -> {e}")
